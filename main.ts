@@ -1,12 +1,16 @@
+import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
+
+// Hardcoded to the testing dir, so we don't mess outside of it for now
+const sandboxPath = path.resolve("./sandbox/run");
+await mkdir(sandboxPath, { recursive: true });
+const SANDBOX_ROOT = await realpath(sandboxPath);
 
 const ICON = "👮🏻‍♂️ ";
 const ICON_ERROR = "🚨 ";
 const API_KEY = process.env.ANTHROPIC_API_KEY_FOR_DREBIN;
 const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 1024;
-// Hardcoded to the testing dir, so we don't mess outside of it for now
-const SANDBOX_ROOT = path.resolve("./sandbox/run");
 
 type TextBlock = {
   type: "text";
@@ -64,14 +68,21 @@ type Tool = {
   handler: (input: any) => Promise<string>;
 };
 
-async function readFile(input: { path: string }): Promise<string> {
-  const resolved = path.resolve(input.path);
-  if (!resolved.startsWith(SANDBOX_ROOT + path.sep)) {
-    throw new Error(resolved + " is not an allowed path");
+export async function resolveInSandbox(inputPath: string): Promise<string> {
+  var resolved = await realpath(inputPath);
+
+  if (
+    resolved !== SANDBOX_ROOT &&
+    !resolved.startsWith(SANDBOX_ROOT + path.sep)
+  ) {
+    throw new Error(resolved + " resolves outside the sandbox");
   }
-  // TODO: not secure, use fs.realPath
-  const file = Bun.file(resolved);
-  return file.text();
+  return resolved;
+}
+
+async function readFile(input: { path: string }): Promise<string> {
+  const safe = await resolveInSandbox(input.path);
+  return Bun.file(safe).text();
 }
 
 const toolRegistry: Record<string, Tool> = {
@@ -209,4 +220,6 @@ async function main() {
   }
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}
