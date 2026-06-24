@@ -1,4 +1,4 @@
-import { mkdir, realpath } from "node:fs/promises";
+import { mkdir, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
 // Hardcoded to the testing dir, so we don't mess outside of it for now
@@ -83,6 +83,11 @@ export async function resolveInSandbox(inputPath: string): Promise<string> {
 async function readFile(input: { path: string }): Promise<string> {
   const safe = await resolveInSandbox(input.path);
   return Bun.file(safe).text();
+}
+
+export async function listDir(input: { path: string }): Promise<string[]> {
+  const safe = await resolveInSandbox(input.path);
+  return readdir(safe);
 }
 
 const toolRegistry: Record<string, Tool> = {

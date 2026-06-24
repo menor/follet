@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { resolveInSandbox } from "./main";
-import { symlink, unlink, writeFile } from "node:fs/promises";
+import { listDir, resolveInSandbox } from "./main";
+import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const SANDBOX = path.resolve("./sandbox/run");
@@ -23,4 +23,26 @@ test("allows a real file inside the sandbox", async () => {
 
 test("rejects a symlink that escapes the sandbox", async () => {
   await expect(resolveInSandbox(leak)).rejects.toThrow();
+});
+
+// listDir
+const listDirPath = path.join(SANDBOX, "listme");
+
+beforeAll(async () => {
+  await mkdir(listDirPath, { recursive: true });
+  await writeFile(path.join(listDirPath, "a.txt"), "one");
+  await writeFile(path.join(listDirPath, "b.txt"), "two");
+});
+afterAll(async () => {
+  await rm(listDirPath, { recursive: true, force: true });
+});
+
+test("list_dir lists the entries in a sandbox directory", async () => {
+  const out = await listDir({ path: listDirPath });
+  expect(out).toContain("a.txt");
+  expect(out).toContain("b.txt");
+});
+
+test("list_dir rejects a directory outside the sandbox", async () => {
+  expect(listDir({ path: "/etc" })).rejects.toThrow();
 });
