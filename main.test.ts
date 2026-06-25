@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { listDir, resolveInSandbox } from "./main";
+import { grep, listDir, resolveInSandbox } from "./main";
 import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -44,4 +44,29 @@ test("list_dir lists the entries in a sandbox directory", async () => {
 
 test("list_dir rejects a directory outside the sandbox", async () => {
   expect(listDir({ path: "/etc" })).rejects.toThrow();
+});
+
+// GREP tool
+const grepFile = path.join(SANDBOX, "naked-gun.txt");
+
+beforeAll(async () => {
+  await writeFile(grepFile, "I'm Frank Drebin, Police Squad.\nDon't move!\n");
+});
+afterAll(async () => {
+  await unlink(grepFile).catch(() => {});
+});
+
+test("grep returns matching lines with line numbers", async () => {
+  const out = await grep({ pattern: "move", path: grepFile });
+  expect(out).toBe("2:Don't move!");
+});
+
+test("grep rejects a file outside the sandbox", async () => {
+  await expect(
+    grep({ pattern: "root", path: "/etc/passwd" }),
+  ).rejects.toThrow();
+});
+
+test("grep throws on an empty pattern (errors-as-data)", async () => {
+  await expect(grep({ pattern: "", path: grepFile })).rejects.toThrow();
 });
