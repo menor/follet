@@ -68,6 +68,13 @@ type Tool = {
   handler: (input: any) => Promise<string>;
 };
 
+type AgentStatus = "idle" | "thinking" | "done";
+
+export type AgentState = {
+  messages: Message[];
+  status: AgentStatus;
+};
+
 export async function resolveInSandbox(inputPath: string): Promise<string> {
   if (typeof inputPath !== "string") {
     throw new Error("path must be a string");
@@ -254,8 +261,40 @@ async function dispatch(toolUse: ToolUseBlock): Promise<ToolResultBlock> {
   }
 }
 
+export async function runStep(state: AgentState): Promise<AgentState> {
+  const response = await request(state.messages);
+  const messages = [...state.messages, response];
+
+  const toolUses = response.content.filter((b) => b.type === "tool_use");
+  if (toolUses.length === 0) {
+    return { messages, status: "done" };
+  }
+
+  const results = await Promise.all(toolUses.map(dispatch));
+  return {
+    messages: [...messages, { role: "user", content: results }],
+    status: "thinking",
+  };
+}
+
+function render(messages: Message[], from: number) {
+  for (const msg of messages.slice(from)) {
+    if (!Array.isArray(msg.content)) continue; // The human input is never an array so this avoids us to echo it
+    for (const block of msg.content) {
+      if (block.type === "text") console.log(block.text);
+      if (block.type === "tool_use")
+        console.log(`${ICON}→ ${block.name}(${JSON.stringify(block.input)})`);
+      if (block.type === "tool_result")
+        console.log(`   ${block.is_error ? ICON_ERROR : "✓"} ${block.content}`);
+    }
+  }
+}
+
 async function main() {
-  const messages: Message[] = [];
+  let state: AgentState = {
+    messages: [],
+    status: "idle",
+  };
   while (true) {
     process.stdout.write(ICON);
     const input = await readUserInput();
@@ -265,29 +304,26 @@ async function main() {
     if (!input || !input.trim()) {
       continue;
     }
+
+    const turnStart = state.messages.length; // roll-back point if the API call fails
+    state = {
+      messages: [...state.messages, { role: "user", content: input }],
+      status: "thinking",
+    };
+
     try {
-      messages.push({ role: "user", content: input });
-      while (true) {
-        const response = await request(messages);
-        messages.push(response);
-        for (const block of response.content) {
-          if (block.type === "text") {
-            console.log(block.text);
-          }
-        }
-        const toolUses = response.content.filter((b) => b.type === "tool_use");
-        if (toolUses.length === 0) {
-          break;
-        }
-        const results = await Promise.all(toolUses.map(dispatch));
-        messages.push({ role: "user", content: results });
-        console.log(messages);
+      let shown = state.messages.length;
+      while (state.status === "thinking") {
+        state = await runStep(state);
+        render(state.messages, shown);
+        shown = state.messages.length;
       }
     } catch (err) {
-      messages.pop(); // we remove the last user message
+      state = { messages: state.messages.slice(0, turnStart), status: "idle" }; // drop failed turn
       console.error(ICON_ERROR, err instanceof Error ? err.message : err);
       continue;
     }
+    state = { ...state, status: "idle" };
   }
 }
 
