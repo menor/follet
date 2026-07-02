@@ -110,6 +110,16 @@ function isToolError(
 const sandboxPath = path.resolve(SANDBOX_DIR);
 let sandboxRoot: string | undefined;
 
+export function assertInside(p: string, root: string): void {
+  if (p !== root && !p.startsWith(root + path.sep)) {
+    throw toolError(
+      "outside_sandbox",
+      `${p} resolves outside the sandbox`,
+      `Symlinks may not escape ${SANDBOX_DIR}.`,
+    );
+  }
+}
+
 async function getSandboxRoot(): Promise<string> {
   if (!sandboxRoot) {
     await mkdir(sandboxPath, { recursive: true });
@@ -118,7 +128,10 @@ async function getSandboxRoot(): Promise<string> {
   return sandboxRoot;
 }
 
-export async function resolveInSandbox(inputPath: string): Promise<string> {
+export async function resolveInSandbox(
+  inputPath: string,
+  { mustExist = true }: { mustExist?: boolean } = {},
+): Promise<string> {
   if (typeof inputPath !== "string") {
     throw toolError(
       "bad_input",
@@ -132,38 +145,40 @@ export async function resolveInSandbox(inputPath: string): Promise<string> {
   // 1. Lexical boundary check FIRST — no disk, never throws on missing.
   //    This gives `outside_sandbox` its hint even when the path doesn't exist.
   const lexical = path.resolve(root, inputPath);
-  if (lexical !== root && !lexical.startsWith(root + path.sep)) {
-    throw toolError(
-      "outside_sandbox",
-      `${lexical} resolves outside the sandbox`,
-      `Pass a path inside ${SANDBOX_DIR}; relative paths resolve from there.`,
-    );
-  }
+  assertInside(lexical, root);
 
   // 2. Canonicalize to defeat symlink escape — but convert "missing" to not_found.
   let resolved: string;
   try {
     resolved = await realpath(lexical);
+    assertInside(resolved, root);
+    return resolved;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+    // unexpected fs error → not anticipated → let it surface loudly
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+
+    if (mustExist) {
       throw toolError(
         "not_found",
         `${inputPath} does not exist`,
         "Use list_dir to see what's in the sandbox.",
       );
     }
-    throw e; // unexpected fs error → not anticipated → let it surface loudly
-  }
 
-  // 3. Re-check AFTER symlink resolution — a symlink inside could point outside.
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw toolError(
-      "outside_sandbox",
-      `${resolved} resolves outside the sandbox`,
-      `Symlinks may not escape ${SANDBOX_DIR}.`,
-    );
+    let parent: string;
+    try {
+      parent = await realpath(path.dirname(lexical));
+    } catch {
+      throw toolError(
+        "not_found",
+        `the directory for ${inputPath} does not exist`,
+        "Write only into a directory that already exists in the sandbox.",
+      );
+    }
+
+    assertInside(parent, root);
+    return path.join(parent, path.basename(lexical));
   }
-  return resolved;
 }
 
 // ============================================================================
@@ -173,6 +188,22 @@ export async function resolveInSandbox(inputPath: string): Promise<string> {
 async function readFile(input: { path: string }): Promise<string> {
   const safe = await resolveInSandbox(input.path);
   return Bun.file(safe).text();
+}
+
+async function writeFile(input: {
+  path: string;
+  content: string;
+}): Promise<string> {
+  if (typeof input.content !== "string") {
+    throw toolError(
+      "bad_input",
+      "write_file requires string content",
+      "Pass the file body as a `content` string.",
+    );
+  }
+  const safe = await resolveInSandbox(input.path, { mustExist: false });
+  await Bun.write(safe, input.content);
+  return `wrote ${input.content.length} bytes to ${input.path}`;
 }
 
 export async function listDir(input: { path: string }): Promise<string> {
@@ -276,6 +307,29 @@ const toolRegistry: Record<string, Tool> = {
       },
     },
     handler: readFile,
+  },
+  write_file: {
+    schema: {
+      name: "write_file",
+      description:
+        "creates or overwrites a text file inside the sandbox with the given text content",
+      input_schema: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "absolute or relative path ",
+          },
+          content: {
+            type: "string",
+            description: "the full text to write",
+          },
+        },
+        required: ["path", "content"],
+      },
+    },
+    handler: writeFile,
+    needsApproval: true,
   },
 };
 

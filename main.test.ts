@@ -75,3 +75,42 @@ test("grep does not emit a phantom line for a trailing newline", async () => {
   const out = await grep({ pattern: "^", path: grepFile });
   expect(out.split("\n").length).toBe(2);
 });
+
+// write path — resolveInSandbox({ mustExist: false })
+// A file we intend to CREATE doesn't exist yet, so the leaf can't be realpath'd;
+// safety shifts to the parent dir. These lock that shift — and prove the leaf is
+// still followed when it happens to exist (the symlinked-overwrite defense).
+const newFile = path.join(SANDBOX, "willwrite.txt"); // never actually created
+const escapeDir = path.join(SANDBOX, "escape-dir"); // symlink → outside the sandbox
+
+beforeAll(async () => {
+  await symlink("/tmp", escapeDir); // a directory link pointing OUT of the sandbox
+});
+afterAll(async () => {
+  await unlink(escapeDir).catch(() => {});
+});
+
+test("write path resolves a not-yet-existing file whose parent is in the sandbox", async () => {
+  expect(await resolveInSandbox(newFile, { mustExist: false })).toBe(newFile);
+});
+
+test("write path rejects a new file when the parent directory does not exist", async () => {
+  const orphan = path.join(SANDBOX, "ghostdir", "f.txt");
+  await expect(resolveInSandbox(orphan, { mustExist: false })).rejects.toThrow();
+});
+
+test("write path rejects a new file inside a symlinked parent that escapes", async () => {
+  const target = path.join(escapeDir, "x.txt"); // parent realpaths to /tmp
+  await expect(resolveInSandbox(target, { mustExist: false })).rejects.toThrow();
+});
+
+test("write path still rejects an existing symlinked leaf that escapes", async () => {
+  // leaf EXISTS (it's the escaping symlink), so it is realpath'd and caught —
+  // mustExist:false must NOT let a symlinked overwrite slip through.
+  await expect(resolveInSandbox(leak, { mustExist: false })).rejects.toThrow();
+});
+
+test("read path (default mustExist) rejects a missing file", async () => {
+  const missing = path.join(SANDBOX, "nope.txt");
+  await expect(resolveInSandbox(missing)).rejects.toThrow();
+});
