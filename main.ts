@@ -8,6 +8,7 @@ import path from "node:path";
 
 const ICON = "👮🏻‍♂️ ";
 const ICON_ERROR = "🚨 ";
+const UPSUN_TOKEN = process.env.UPSUN_TOKEN_FOR_DREBIN;
 const API_KEY = process.env.ANTHROPIC_API_KEY_FOR_DREBIN;
 const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 1024;
@@ -90,7 +91,12 @@ export type AgentState = {
 
 const TOOL_ERROR = Symbol("toolError");
 
-type ErrorCode = "outside_sandbox" | "not_found" | "bad_pattern" | "bad_input";
+type ErrorCode =
+  | "outside_sandbox"
+  | "not_found"
+  | "bad_pattern"
+  | "bad_input"
+  | "command_failed";
 
 function toolError(code: ErrorCode, message: string, hint: string) {
   return Object.assign(new Error(message), { [TOOL_ERROR]: true, code, hint });
@@ -247,6 +253,54 @@ export async function grep(input: {
   return hits.length ? hits.join("\n") : "(no matches)";
 }
 
+async function runSol(input: { args: string[] }): Promise<string> {
+  if (
+    !Array.isArray(input.args) ||
+    input.args.some((a) => typeof a !== "string")
+  ) {
+    throw toolError(
+      "bad_input",
+      "run_sol requires an array of string args",
+      'Pass Sol\'s arguments as an `args` string array, e.g. ["version"].',
+    );
+  }
+
+  const root = await getSandboxRoot();
+  const proc = Bun.spawn(["sol", ...input.args, "-o", "json"], {
+    // ← argv ARRAY; -o json = parseable
+    cwd: root, // ← run from inside the sandbox
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      PATH: process.env.PATH ?? "", // Sol must find its own dependencies
+      HOME: process.env.HOME ?? "", // Sol reads its config/cache here
+      ...(UPSUN_TOKEN ? { UPSUN_TOKEN } : {}), // the secret — injected, never in args
+    },
+  });
+
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+
+  if (exitCode !== 0) {
+    // Sol v0.2+ emits {error:{code,message,hint}} on STDOUT — the same contract
+    // drebin speaks. Forward Sol's message and hint; don't invent your own.
+    let message = stderr.trim() || `sol exited with code ${exitCode}`;
+    let hint = "Add --schema to any command to inspect its arguments.";
+    try {
+      const { error } = JSON.parse(stdout);
+      if (error?.message) message = error.message;
+      if (error?.hint) hint = error.hint; // ← Sol's hint, not a guess
+    } catch {
+      /* no JSON (e.g. nothing on stdout) → keep the fallbacks above */
+    }
+    throw toolError("command_failed", message, hint);
+  }
+  return stdout.trim() || "(sol produced no output)";
+}
+
 const toolRegistry: Record<string, Tool> = {
   grep: {
     schema: {
@@ -307,6 +361,29 @@ const toolRegistry: Record<string, Tool> = {
       },
     },
     handler: readFile,
+  },
+  run_sol: {
+    schema: {
+      name: "run_sol",
+      description:
+        "runs the Sol CLI (agent-optimized Upsun CLI) with the given arguments and returns its output. " +
+        'Pass the subcommand and flags as array elements, e.g. ["version"] or ["project:list"]. ' +
+        'Append "--schema" to any command to see its arguments WITHOUT running it.',
+      input_schema: {
+        type: "object",
+        properties: {
+          args: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              'Sol subcommand and flags as separate strings, e.g. ["environment:list", "--schema"]',
+          },
+        },
+        required: ["args"],
+      },
+    },
+    handler: runSol,
+    needsApproval: true, // ← a subprocess touches the world; a human sees the argv first
   },
   write_file: {
     schema: {
