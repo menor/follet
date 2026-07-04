@@ -1,5 +1,13 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { grep, listDir, resolveInSandbox } from "./main";
+import {
+  grep,
+  listDir,
+  resolveInSandbox,
+  runSol,
+  solArgv,
+  solEnv,
+  solError,
+} from "./main";
 import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -22,7 +30,7 @@ test("allows a real file inside the sandbox", async () => {
 });
 
 test("rejects a symlink that escapes the sandbox", async () => {
-  await expect(resolveInSandbox(leak)).rejects.toThrow();
+  expect(resolveInSandbox(leak)).rejects.toThrow();
 });
 
 // listDir
@@ -62,13 +70,11 @@ test("grep returns matching lines with line numbers", async () => {
 });
 
 test("grep rejects a file outside the sandbox", async () => {
-  await expect(
-    grep({ pattern: "root", path: "/etc/passwd" }),
-  ).rejects.toThrow();
+  expect(grep({ pattern: "root", path: "/etc/passwd" })).rejects.toThrow();
 });
 
 test("grep throws on an empty pattern (errors-as-data)", async () => {
-  await expect(grep({ pattern: "", path: grepFile })).rejects.toThrow();
+  expect(grep({ pattern: "", path: grepFile })).rejects.toThrow();
 });
 
 test("grep does not emit a phantom line for a trailing newline", async () => {
@@ -96,21 +102,62 @@ test("write path resolves a not-yet-existing file whose parent is in the sandbox
 
 test("write path rejects a new file when the parent directory does not exist", async () => {
   const orphan = path.join(SANDBOX, "ghostdir", "f.txt");
-  await expect(resolveInSandbox(orphan, { mustExist: false })).rejects.toThrow();
+  expect(resolveInSandbox(orphan, { mustExist: false })).rejects.toThrow();
 });
 
 test("write path rejects a new file inside a symlinked parent that escapes", async () => {
   const target = path.join(escapeDir, "x.txt"); // parent realpaths to /tmp
-  await expect(resolveInSandbox(target, { mustExist: false })).rejects.toThrow();
+  expect(resolveInSandbox(target, { mustExist: false })).rejects.toThrow();
 });
 
 test("write path still rejects an existing symlinked leaf that escapes", async () => {
   // leaf EXISTS (it's the escaping symlink), so it is realpath'd and caught —
   // mustExist:false must NOT let a symlinked overwrite slip through.
-  await expect(resolveInSandbox(leak, { mustExist: false })).rejects.toThrow();
+  expect(resolveInSandbox(leak, { mustExist: false })).rejects.toThrow();
 });
 
 test("read path (default mustExist) rejects a missing file", async () => {
   const missing = path.join(SANDBOX, "nope.txt");
-  await expect(resolveInSandbox(missing)).rejects.toThrow();
+  expect(resolveInSandbox(missing)).rejects.toThrow();
+});
+
+test("solEnv does not leak drebin's own secrets into the child", () => {
+  process.env.ANTHROPIC_API_KEY_FOR_DREBIN = "decoy-model-key";
+  const env = solEnv("some-upsun-token");
+  expect(env.ANTHROPIC_API_KEY_FOR_DREBIN).toBeUndefined();
+  expect(Object.keys(env).sort()).toEqual(["HOME", "PATH", "UPSUN_TOKEN"]);
+});
+
+test("solEnv injects the token when set, omits the key when not", () => {
+  expect(solEnv("t").UPSUN_TOKEN).toBe("t");
+  expect("UPSUN_TOKEN" in solEnv("")).toBe(false); // "" is falsy → omitted; undefined would trigger the default
+});
+
+test("solArgv keeps the token out of the process arguments", () => {
+  const argv = solArgv(["project:list"]);
+  expect(argv).toEqual(["sol", "project:list", "-o", "json"]);
+  expect(argv.join(" ")).not.toContain("token"); // the model's args are the ONLY variable part
+});
+
+test("solError forwards Sol's structured message and hint", () => {
+  const body = JSON.stringify({
+    error: {
+      code: "unauthenticated",
+      message: "not logged in",
+      hint: "run auth:login",
+    },
+  });
+  const e = solError(body, "", 1) as Error & { code: string; hint: string };
+  expect(e.code).toBe("command_failed"); // drebin owns its code
+  expect(e.message).toBe("not logged in"); // Sol's words, verbatim
+  expect(e.hint).toBe("run auth:login"); // Sol's hint, not a guess
+});
+
+test("solError falls back when Sol emits no JSON", () => {
+  const e = solError("", "boom", 1) as Error;
+  expect(e.message).toBe("boom");
+});
+
+test("runSol rejects non-array args with bad_input", async () => {
+  expect(runSol({ args: "project:list" as any })).rejects.toThrow();
 });

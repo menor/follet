@@ -253,7 +253,38 @@ export async function grep(input: {
   return hits.length ? hits.join("\n") : "(no matches)";
 }
 
-async function runSol(input: { args: string[] }): Promise<string> {
+// argv ARRAY, never a shell string: the model supplies only `args`;
+// the binary and flags are fixed here. The token can't be an element — by shape.
+export function solArgv(args: string[]): string[] {
+  return ["sol", ...args, "-o", "json"];
+}
+
+// deny-by-default child env: allowlist ONLY what Sol needs, plus the secret.
+// token defaults to the module value so prod calls solEnv() and tests pass their own.
+export function solEnv(token = UPSUN_TOKEN): Record<string, string> {
+  return {
+    PATH: process.env.PATH ?? "", // Sol must find its own dependencies
+    HOME: process.env.HOME ?? "", // Sol reads its config/cache here
+    ...(token ? { UPSUN_TOKEN: token } : {}), // the secret — injected, never in args
+  };
+}
+
+export function solError(stdout: string, stderr: string, exitCode: number) {
+  // Sol v0.2+ emits {error:{code,message,hint}} on STDOUT — the same contract
+  // drebin speaks. Forward Sol's message and hint
+  let message = stderr.trim() || `sol exited with code ${exitCode}`;
+  let hint = "Add --schema to any command to inspect its arguments.";
+  try {
+    const { error } = JSON.parse(stdout);
+    if (error?.message) message = error.message;
+    if (error?.hint) hint = error.hint; // ← Sol's hint, not a guess
+  } catch {
+    /* no JSON (e.g. nothing on stdout) → keep the fallbacks above */
+  }
+  return toolError("command_failed", message, hint);
+}
+
+export async function runSol(input: { args: string[] }): Promise<string> {
   if (
     !Array.isArray(input.args) ||
     input.args.some((a) => typeof a !== "string")
@@ -266,16 +297,12 @@ async function runSol(input: { args: string[] }): Promise<string> {
   }
 
   const root = await getSandboxRoot();
-  const proc = Bun.spawn(["sol", ...input.args, "-o", "json"], {
+  const proc = Bun.spawn(solArgv(input.args), {
     // ← argv ARRAY; -o json = parseable
     cwd: root, // ← run from inside the sandbox
     stdout: "pipe",
     stderr: "pipe",
-    env: {
-      PATH: process.env.PATH ?? "", // Sol must find its own dependencies
-      HOME: process.env.HOME ?? "", // Sol reads its config/cache here
-      ...(UPSUN_TOKEN ? { UPSUN_TOKEN } : {}), // the secret — injected, never in args
-    },
+    env: solEnv(),
   });
 
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -285,18 +312,7 @@ async function runSol(input: { args: string[] }): Promise<string> {
   ]);
 
   if (exitCode !== 0) {
-    // Sol v0.2+ emits {error:{code,message,hint}} on STDOUT — the same contract
-    // drebin speaks. Forward Sol's message and hint; don't invent your own.
-    let message = stderr.trim() || `sol exited with code ${exitCode}`;
-    let hint = "Add --schema to any command to inspect its arguments.";
-    try {
-      const { error } = JSON.parse(stdout);
-      if (error?.message) message = error.message;
-      if (error?.hint) hint = error.hint; // ← Sol's hint, not a guess
-    } catch {
-      /* no JSON (e.g. nothing on stdout) → keep the fallbacks above */
-    }
-    throw toolError("command_failed", message, hint);
+    throw solError(stdout, stderr, exitCode);
   }
   return stdout.trim() || "(sol produced no output)";
 }
