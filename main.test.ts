@@ -7,6 +7,7 @@ import {
   solArgv,
   solEnv,
   solError,
+  solNeedsApproval,
 } from "./main";
 import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -160,4 +161,20 @@ test("solError falls back when Sol emits no JSON", () => {
 
 test("runSol rejects non-array args with bad_input", async () => {
   expect(runSol({ args: "project:list" as any })).rejects.toThrow();
+});
+
+test("read-only Sol verbs run without a human", () => {
+  expect(solNeedsApproval({ args: ["project:list"] })).toBe(false);
+  expect(solNeedsApproval({ args: ["environment:info", "main"] })).toBe(false);
+  expect(solNeedsApproval({ args: ["version"] })).toBe(false);
+});
+
+test("mutating Sol verbs gate", () => {
+  expect(solNeedsApproval({ args: ["environment:delete", "main"] })).toBe(true);
+  expect(solNeedsApproval({ args: ["environment:redeploy"] })).toBe(true);
+});
+
+test("an unknown verb gates — deny by default", () => {
+  expect(solNeedsApproval({ args: ["totally:new-verb"] })).toBe(true);
+  expect(solNeedsApproval({ args: [] })).toBe(true); // no verb at all → gate
 });

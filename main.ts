@@ -17,6 +17,9 @@ const MAX_TOKENS = 1024;
 const SANDBOX_DIR = "./sandbox/run";
 const SESSIONS_DIR = path.resolve("./.sessions");
 
+// Commands that don't need approval on sol (read commands)
+const SOL_READ_SUFFIXES = [":list", ":get", ":info"];
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -75,7 +78,7 @@ type ToolSchema = {
 type Tool = {
   schema: ToolSchema;
   handler: (input: any) => Promise<string>;
-  needsApproval?: boolean; // Is not sent to the model, so this lives outside the schema
+  needsApproval?: boolean | ((input: any) => boolean);
 };
 
 type AgentStatus = "awaiting_approval" | "idle" | "thinking" | "done";
@@ -284,6 +287,12 @@ export function solError(stdout: string, stderr: string, exitCode: number) {
   return toolError("command_failed", message, hint);
 }
 
+export function solNeedsApproval(input: { args: string[] }): boolean {
+  const verb = input.args?.[0] || "";
+  if (verb === "version") return false;
+  return !SOL_READ_SUFFIXES.some((s) => verb.endsWith(s));
+}
+
 export async function runSol(input: { args: string[] }): Promise<string> {
   if (
     !Array.isArray(input.args) ||
@@ -399,7 +408,7 @@ const toolRegistry: Record<string, Tool> = {
       },
     },
     handler: runSol,
-    needsApproval: true, // ← a subprocess touches the world; a human sees the argv first
+    needsApproval: solNeedsApproval, // per command
   },
   write_file: {
     schema: {
@@ -506,6 +515,11 @@ async function dispatch(toolUse: ToolUseBlock): Promise<ToolResultBlock> {
   }
 }
 
+function toolNeedsApproval(use: ToolUseBlock): boolean {
+  const gate = toolRegistry[use.name]?.needsApproval;
+  return typeof gate === "function" ? gate(use.input) : gate === true;
+}
+
 export async function runStep(state: AgentState): Promise<AgentState> {
   const response = await request(state.messages);
   const messages = [...state.messages, response];
@@ -515,7 +529,7 @@ export async function runStep(state: AgentState): Promise<AgentState> {
     return { messages, status: "done" };
   }
 
-  if (toolUses.some((u) => toolRegistry[u.name]?.needsApproval)) {
+  if (toolUses.some(toolNeedsApproval)) {
     return { messages, status: "awaiting_approval" };
   }
 
