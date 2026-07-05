@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "drebin",
+      "name": "follet",
       "devDependencies": {
         "@types/bun": "latest",
       },

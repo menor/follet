@@ -56,10 +56,10 @@ test("list_dir rejects a directory outside the sandbox", async () => {
 });
 
 // GREP tool
-const grepFile = path.join(SANDBOX, "naked-gun.txt");
+const grepFile = path.join(SANDBOX, "folklore.txt");
 
 beforeAll(async () => {
-  await writeFile(grepFile, "I'm Frank Drebin, Police Squad.\nDon't move!\n");
+  await writeFile(grepFile, "I'm a follet, a house sprite.\nDon't move!\n");
 });
 afterAll(async () => {
   await unlink(grepFile).catch(() => {});
@@ -122,10 +122,10 @@ test("read path (default mustExist) rejects a missing file", async () => {
   expect(resolveInSandbox(missing)).rejects.toThrow();
 });
 
-test("solEnv does not leak drebin's own secrets into the child", () => {
-  process.env.ANTHROPIC_API_KEY_FOR_DREBIN = "decoy-model-key";
+test("solEnv does not leak follet's own secrets into the child", () => {
+  process.env.ANTHROPIC_API_KEY_FOR_FOLLET = "decoy-model-key";
   const env = solEnv("some-upsun-token");
-  expect(env.ANTHROPIC_API_KEY_FOR_DREBIN).toBeUndefined();
+  expect(env.ANTHROPIC_API_KEY_FOR_FOLLET).toBeUndefined();
   expect(Object.keys(env).sort()).toEqual(["HOME", "PATH", "UPSUN_TOKEN"]);
 });
 
@@ -149,7 +149,7 @@ test("solError forwards Sol's structured message and hint", () => {
     },
   });
   const e = solError(body, "", 1) as Error & { code: string; hint: string };
-  expect(e.code).toBe("command_failed"); // drebin owns its code
+  expect(e.code).toBe("command_failed"); // follet owns its code
   expect(e.message).toBe("not logged in"); // Sol's words, verbatim
   expect(e.hint).toBe("run auth:login"); // Sol's hint, not a guess
 });

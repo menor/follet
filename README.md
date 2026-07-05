@@ -1,8 +1,8 @@
-# drebin
+# follet
 
 A coding agent built from scratch — no framework, no SDK, raw `fetch` — to understand the mechanics behind production agents.
 
-Years ago at a dev bootcamp I had to build my own jQuery before I was allowed to use the real one. It turned the magic into something I could reason about. `drebin` is me doing the same thing with coding agents.
+Years ago at a dev bootcamp I had to build my own jQuery before I was allowed to use the real one. It turned the magic into something I could reason about. `follet` is me doing the same thing with coding agents.
 
 It's a learning project, not a product. Single user, runs in your terminal, talks to the Claude Messages API.
 
@@ -25,10 +25,10 @@ Requires [Bun](https://bun.com).
 bun install
 ```
 
-Set your API key (drebin reads a project-specific variable so it won't collide with other tools):
+Set your API key (follet reads a project-specific variable so it won't collide with other tools):
 
 ```bash
-export ANTHROPIC_API_KEY_FOR_DREBIN=sk-ant-...
+export ANTHROPIC_API_KEY_FOR_FOLLET=sk-ant-...
 ```
 
 Run the interactive REPL:
@@ -54,7 +54,7 @@ This split is the point of the design — a second interface needs zero changes 
 
 ## Tools and the sandbox
 
-drebin ships three narrow, read-only tools:
+follet ships three narrow, read-only tools:
 
 | Tool | Does |
 |---|---|

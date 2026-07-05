@@ -6,10 +6,10 @@ import path from "node:path";
 // CONFIG
 // ============================================================================
 
-const ICON = "👮🏻‍♂️ ";
-const ICON_ERROR = "🚨 ";
-const UPSUN_TOKEN = process.env.UPSUN_TOKEN_FOR_DREBIN;
-const API_KEY = process.env.ANTHROPIC_API_KEY_FOR_DREBIN;
+const ICON = "🧚 ";
+const ICON_ERROR = "🔥 ";
+const UPSUN_TOKEN = process.env.UPSUN_TOKEN_FOR_FOLLET;
+const API_KEY = process.env.ANTHROPIC_API_KEY_FOR_FOLLET;
 const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 1024;
 
@@ -274,7 +274,7 @@ export function solEnv(token = UPSUN_TOKEN): Record<string, string> {
 
 export function solError(stdout: string, stderr: string, exitCode: number) {
   // Sol v0.2+ emits {error:{code,message,hint}} on STDOUT — the same contract
-  // drebin speaks. Forward Sol's message and hint
+  // follet speaks. Forward Sol's message and hint
   let message = stderr.trim() || `sol exited with code ${exitCode}`;
   let hint = "Add --schema to any command to inspect its arguments.";
   try {
@@ -444,7 +444,7 @@ const tools = Object.values(toolRegistry).map((t) => t.schema);
 
 async function request(messages: Message[]): Promise<AssistantMessage> {
   if (!API_KEY) {
-    throw new Error("No ANTHROPIC_API_KEY_FOR_DREBIN found in the environment");
+    throw new Error("No ANTHROPIC_API_KEY_FOR_FOLLET found in the environment");
   }
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
