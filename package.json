@@ -1,6 +1,10 @@
 {
   "name": "follet",
   "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./main.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

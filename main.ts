@@ -24,6 +24,12 @@ const SOL_READ_SUFFIXES = [":list", ":get", ":info"];
 // TYPES
 // ============================================================================
 
+export interface EventSink {
+  append(messages: Message[]): Promise<void>;
+  load(): Promise<Message[]>;
+  close?(): Promise<void> | void;
+}
+
 type TextBlock = {
   type: "text";
   text: string;
@@ -53,7 +59,7 @@ type AssistantMessage = {
   content: (TextBlock | ToolUseBlock)[];
 };
 
-type Message = UserMessage | AssistantMessage;
+export type Message = UserMessage | AssistantMessage;
 
 type AssistantResponse = AssistantMessage & {
   id: string;
@@ -576,22 +582,26 @@ function sessionPath(id: string) {
   return path.join(SESSIONS_DIR, id + ".jsonl");
 }
 
-async function persist(sink: WriteStream, messages: Message[], from: number) {
-  const lines = messages
-    .slice(from)
-    .map((m) => JSON.stringify(m) + "\n")
-    .join("");
-  if (lines) {
-    sink.write(lines);
-  }
-}
+// A default interface in case no database is provided
+export function jsonlSink(id: string): EventSink {
+  const stream = createWriteStream(sessionPath(id), { flags: "a" });
 
-async function loadSession(id: string): Promise<Message[]> {
-  const text = await Bun.file(sessionPath(id)).text();
-  return text
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Message);
+  return {
+    async append(messages: Message[]): Promise<void> {
+      const lines = messages.map((m) => JSON.stringify(m) + "\n").join("");
+      if (lines) stream.write(lines);
+    },
+    async load(): Promise<Message[]> {
+      const text = await Bun.file(sessionPath(id)).text();
+      return text
+        .split("\n")
+        .filter((l) => l.trim() !== "")
+        .map((l) => JSON.parse(l) as Message);
+    },
+    close() {
+      stream.end();
+    },
+  };
 }
 
 // ============================================================================
@@ -625,6 +635,7 @@ async function drive(
 
 async function main() {
   const resumeFlag = process.argv.includes("--resume");
+
   const resumeId = resumeFlag
     ? process.argv[process.argv.indexOf("--resume") + 1]
     : undefined;
@@ -633,9 +644,14 @@ async function main() {
     throw new Error("--resume needs a session id to resume");
   }
 
+  const sessionId = resumeId ?? crypto.randomUUID();
+  console.log(`${ICON}session ${sessionId}`);
+
+  const sink = jsonlSink(sessionId);
+
   let state: AgentState = resumeId
     ? {
-        messages: await loadSession(resumeId),
+        messages: await sink.load(),
         status: "idle",
       }
     : {
@@ -643,16 +659,12 @@ async function main() {
         status: "idle",
       };
 
-  const sessionId = resumeId ?? crypto.randomUUID();
-  console.log(`${ICON}session ${sessionId}`);
-
   if (resumeId) {
     console.log(`resumed with ${state.messages.length} messages.`);
   }
 
   await mkdir(SESSIONS_DIR, { recursive: true });
-  // "a" flag appends, so resuming keeps the existing log intact
-  const sink = createWriteStream(sessionPath(sessionId), { flags: "a" });
+
   // Single line iterator for the whole session (idiomatic Bun stdin read).
   // Prompt before the loop, then once after each turn — no dangling icons.
   process.stdout.write(ICON);
@@ -684,11 +696,11 @@ async function main() {
     try {
       state = await drive(state, from);
     } catch (err) {
-      // drop failed turn; the rolled-back slice means persist() below writes nothing
+      // drop failed turn;
       state = { messages: state.messages.slice(0, from), status: "idle" };
       console.error(ICON_ERROR, err instanceof Error ? err.message : err);
     }
-    await persist(sink, state.messages, from);
+    await sink.append(state.messages.slice(from));
     if (state.status === "awaiting_approval") {
       process.stdout.write("\n Approve? (y/n) ");
     } else {
@@ -696,7 +708,7 @@ async function main() {
       process.stdout.write(ICON);
     }
   }
-  sink.end();
+  await sink.close?.();
 }
 
 if (import.meta.main) {
