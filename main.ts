@@ -620,6 +620,14 @@ function render(messages: Message[], from: number) {
   }
 }
 
+export async function runToCheckpoint(initial: AgentState): Promise<AgentState> {
+  let state = initial
+  while (initial.status === "thinking") {
+    state = await runStep(state)
+  }
+  return state
+}
+
 async function drive(
   state: AgentState,
   shownFrom: number,
