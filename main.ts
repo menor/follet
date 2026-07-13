@@ -8,7 +8,6 @@ import path from "node:path";
 
 const ICON = "🧚 ";
 const ICON_ERROR = "🔥 ";
-const UPSUN_TOKEN = process.env.UPSUN_TOKEN_FOR_FOLLET;
 const API_KEY = process.env.ANTHROPIC_API_KEY_FOR_FOLLET;
 const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 1024;
@@ -16,9 +15,6 @@ const MAX_TOKENS = 1024;
 // Hardcoded to the testing dir, so we don't mess outside of it for now.
 const SANDBOX_DIR = "./sandbox/run";
 const SESSIONS_DIR = path.resolve("./.sessions");
-
-// Commands that don't need approval on sol (read commands)
-const SOL_READ_SUFFIXES = [":list", ":get", ":info"];
 
 // ============================================================================
 // TYPES
@@ -81,11 +77,15 @@ type ToolSchema = {
   };
 };
 
-type Tool = {
+export type ToolDefinition = {
   schema: ToolSchema;
   handler: (input: any) => Promise<string>;
   needsApproval?: boolean | ((input: any) => boolean);
 };
+
+export type ToolRegistry = Record<string, ToolDefinition>
+
+export type Agent = ReturnType<typeof createAgent>;
 
 type AgentStatus = "awaiting_approval" | "idle" | "thinking" | "done";
 
@@ -100,6 +100,8 @@ export type AgentState = {
 
 const TOOL_ERROR = Symbol("toolError");
 
+// follet's own tools use these codes; an injected tool may pass any string.
+// `string & {}` keeps ErrorCode autocompletion while still accepting anything.
 type ErrorCode =
   | "outside_sandbox"
   | "not_found"
@@ -107,13 +109,22 @@ type ErrorCode =
   | "bad_input"
   | "command_failed";
 
-function toolError(code: ErrorCode, message: string, hint: string) {
+// The error contract for tool handlers. Throw `toolError(...)` to signal a
+// recoverable failure that should be handed back to the model as data; any
+// other throw is treated as a bug and crashes the process. The brand is a
+// private Symbol, so an injected tool MUST use this constructor — a plain
+// object with the same fields won't pass `isToolError`.
+export type ToolError = Error & { code: string; hint: string };
+
+export function toolError(
+  code: ErrorCode | (string & {}),
+  message: string,
+  hint: string,
+): ToolError {
   return Object.assign(new Error(message), { [TOOL_ERROR]: true, code, hint });
 }
 
-function isToolError(
-  e: unknown,
-): e is Error & { code: ErrorCode; hint: string } {
+function isToolError(e: unknown): e is ToolError {
   return e instanceof Error && TOOL_ERROR in e;
 }
 
@@ -135,7 +146,7 @@ export function assertInside(p: string, root: string): void {
   }
 }
 
-async function getSandboxRoot(): Promise<string> {
+export async function getSandboxRoot(): Promise<string> {
   if (!sandboxRoot) {
     await mkdir(sandboxPath, { recursive: true });
     sandboxRoot = await realpath(sandboxPath);
@@ -262,77 +273,7 @@ export async function grep(input: {
   return hits.length ? hits.join("\n") : "(no matches)";
 }
 
-// argv ARRAY, never a shell string: the model supplies only `args`;
-// the binary and flags are fixed here. The token can't be an element — by shape.
-export function solArgv(args: string[]): string[] {
-  return ["sol", ...args, "-o", "json"];
-}
-
-// deny-by-default child env: allowlist ONLY what Sol needs, plus the secret.
-// token defaults to the module value so prod calls solEnv() and tests pass their own.
-export function solEnv(token = UPSUN_TOKEN): Record<string, string> {
-  return {
-    PATH: process.env.PATH ?? "", // Sol must find its own dependencies
-    HOME: process.env.HOME ?? "", // Sol reads its config/cache here
-    ...(token ? { UPSUN_TOKEN: token } : {}), // the secret — injected, never in args
-  };
-}
-
-export function solError(stdout: string, stderr: string, exitCode: number) {
-  // Sol v0.2+ emits {error:{code,message,hint}} on STDOUT — the same contract
-  // follet speaks. Forward Sol's message and hint
-  let message = stderr.trim() || `sol exited with code ${exitCode}`;
-  let hint = "Add --schema to any command to inspect its arguments.";
-  try {
-    const { error } = JSON.parse(stdout);
-    if (error?.message) message = error.message;
-    if (error?.hint) hint = error.hint; // ← Sol's hint, not a guess
-  } catch {
-    /* no JSON (e.g. nothing on stdout) → keep the fallbacks above */
-  }
-  return toolError("command_failed", message, hint);
-}
-
-export function solNeedsApproval(input: { args: string[] }): boolean {
-  const verb = input.args?.[0] || "";
-  if (verb === "version") return false;
-  return !SOL_READ_SUFFIXES.some((s) => verb.endsWith(s));
-}
-
-export async function runSol(input: { args: string[] }): Promise<string> {
-  if (
-    !Array.isArray(input.args) ||
-    input.args.some((a) => typeof a !== "string")
-  ) {
-    throw toolError(
-      "bad_input",
-      "run_sol requires an array of string args",
-      'Pass Sol\'s arguments as an `args` string array, e.g. ["version"].',
-    );
-  }
-
-  const root = await getSandboxRoot();
-  const proc = Bun.spawn(solArgv(input.args), {
-    // ← argv ARRAY; -o json = parseable
-    cwd: root, // ← run from inside the sandbox
-    stdout: "pipe",
-    stderr: "pipe",
-    env: solEnv(),
-  });
-
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-
-  if (exitCode !== 0) {
-    throw solError(stdout, stderr, exitCode);
-  }
-  return stdout.trim() || "(sol produced no output)";
-}
-
-const toolRegistry: Record<string, Tool> = {
+export const builtInToolRegistry: ToolRegistry = {
   grep: {
     schema: {
       name: "grep",
@@ -393,29 +334,6 @@ const toolRegistry: Record<string, Tool> = {
     },
     handler: readFile,
   },
-  run_sol: {
-    schema: {
-      name: "run_sol",
-      description:
-        "runs the Sol CLI (agent-optimized Upsun CLI) with the given arguments and returns its output. " +
-        'Pass the subcommand and flags as array elements, e.g. ["version"] or ["project:list"]. ' +
-        'Append "--schema" to any command to see its arguments WITHOUT running it.',
-      input_schema: {
-        type: "object",
-        properties: {
-          args: {
-            type: "array",
-            items: { type: "string" },
-            description:
-              'Sol subcommand and flags as separate strings, e.g. ["environment:list", "--schema"]',
-          },
-        },
-        required: ["args"],
-      },
-    },
-    handler: runSol,
-    needsApproval: solNeedsApproval, // per command
-  },
   write_file: {
     schema: {
       name: "write_file",
@@ -441,123 +359,120 @@ const toolRegistry: Record<string, Tool> = {
   },
 };
 
-// we don't want to send the functions in handlers in our response
-const tools = Object.values(toolRegistry).map((t) => t.schema);
-
 // ============================================================================
-// MODEL
+// CORE — model transport + state-in/state-out engine, transport-agnostic
 // ============================================================================
 
-async function request(messages: Message[]): Promise<AssistantMessage> {
-  if (!API_KEY) {
-    throw new Error("No ANTHROPIC_API_KEY_FOR_FOLLET found in the environment");
-  }
+export function createAgent({ tools = builtInToolRegistry } = {}) {
+  // we don't want to send the functions in handlers in our response
+  const toolSchemas = Object.values(tools).map((t) => t.schema);
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      messages,
-      tools,
-    }),
-  });
+  async function request(messages: Message[]): Promise<AssistantMessage> {
+    if (!API_KEY) {
+      throw new Error("No ANTHROPIC_API_KEY_FOR_FOLLET found in the environment");
+    }
 
-  if (!response.ok) {
-    throw new Error(`API: ${response.status}: ${await response.text()}`);
-  }
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        messages,
+        toolSchemas,
+      }),
+    });
 
-  const data = (await response.json()) as AssistantResponse;
+    if (!response.ok) {
+      throw new Error(`API: ${response.status}: ${await response.text()}`);
+    }
 
-  return {
-    role: "assistant",
-    content: data.content,
-  };
-}
+    const data = (await response.json()) as AssistantResponse;
 
-// ============================================================================
-// CORE — state-in/state-out engine, transport-agnostic
-// ============================================================================
-
-async function dispatch(toolUse: ToolUseBlock): Promise<ToolResultBlock> {
-  const tool = toolRegistry[toolUse.name];
-  if (!tool) {
     return {
-      type: "tool_result",
-      tool_use_id: toolUse.id,
-      content: `Unknown tool: ${toolUse.name}`,
-      is_error: true,
+      role: "assistant",
+      content: data.content,
     };
   }
 
-  try {
-    const result: ToolResultBlock = {
-      type: "tool_result",
-      tool_use_id: toolUse.id,
-      content: await tool.handler(toolUse.input),
-      is_error: false,
-    };
-
-    return result;
-  } catch (err) {
-    if (isToolError(err)) {
+  async function dispatch(toolUse: ToolUseBlock): Promise<ToolResultBlock> {
+    const tool = tools[toolUse.name];
+    if (!tool) {
       return {
         type: "tool_result",
         tool_use_id: toolUse.id,
-        content: JSON.stringify({
-          code: err.code,
-          message: err.message,
-          hint: err.hint,
-        }),
+        content: `Unknown tool: ${toolUse.name}`,
         is_error: true,
       };
     }
-    throw err; // programmer error, DON'T feed it to the model, let it crash
+
+    try {
+      const result: ToolResultBlock = {
+        type: "tool_result",
+        tool_use_id: toolUse.id,
+        content: await tool.handler(toolUse.input),
+        is_error: false,
+      };
+
+      return result;
+    } catch (err) {
+      if (isToolError(err)) {
+        return {
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: JSON.stringify({
+            code: err.code,
+            message: err.message,
+            hint: err.hint,
+          }),
+          is_error: true,
+        };
+      }
+      throw err; // programmer error, DON'T feed it to the model, let it crash
+    }
   }
-}
 
-function toolNeedsApproval(use: ToolUseBlock): boolean {
-  const gate = toolRegistry[use.name]?.needsApproval;
-  return typeof gate === "function" ? gate(use.input) : gate === true;
-}
-
-export async function runStep(state: AgentState): Promise<AgentState> {
-  const response = await request(state.messages);
-  const messages = [...state.messages, response];
-
-  const toolUses = response.content.filter((b) => b.type === "tool_use");
-  if (toolUses.length === 0) {
-    return { messages, status: "done" };
+  function toolNeedsApproval(use: ToolUseBlock): boolean {
+    const gate = tools[use.name]?.needsApproval;
+    return typeof gate === "function" ? gate(use.input) : gate === true;
   }
 
-  if (toolUses.some(toolNeedsApproval)) {
-    return { messages, status: "awaiting_approval" };
+  async function runStep(state: AgentState): Promise<AgentState> {
+    const response = await request(state.messages);
+    const messages = [...state.messages, response];
+
+    const toolUses = response.content.filter((b) => b.type === "tool_use");
+    if (toolUses.length === 0) {
+      return { messages, status: "done" };
+    }
+
+    if (toolUses.some(toolNeedsApproval)) {
+      return { messages, status: "awaiting_approval" };
+    }
+
+    const results = await Promise.all(toolUses.map(dispatch));
+    return {
+      messages: [...messages, { role: "user", content: results }],
+      status: "thinking",
+    };
   }
 
-  const results = await Promise.all(toolUses.map(dispatch));
-  return {
-    messages: [...messages, { role: "user", content: results }],
-    status: "thinking",
-  };
-}
+  async function resumeAfterApproval(
+    state: AgentState,
+    approved: boolean,
+  ): Promise<AgentState> {
+    const last = state.messages.at(-1);
+    if (!last) throw new Error("resumeAfterApproval called with no messages");
 
-export async function resumeAfterApproval(
-  state: AgentState,
-  approved: boolean,
-): Promise<AgentState> {
-  const last = state.messages.at(-1);
-  if (!last) throw new Error("resumeAfterApproval called with no messages");
+    const toolUses = last.content.filter((b) => b.type === "tool_use");
 
-  const toolUses = last.content.filter((b) => b.type === "tool_use");
-
-  const results: ToolResultBlock[] = approved
-    ? await Promise.all(toolUses.map(dispatch))
-    : toolUses.map((u) => ({
+    const results: ToolResultBlock[] = approved
+      ? await Promise.all(toolUses.map(dispatch))
+      : toolUses.map((u) => ({
         type: "tool_result",
         tool_use_id: u.id,
         content: JSON.stringify({
@@ -568,10 +483,21 @@ export async function resumeAfterApproval(
         is_error: true,
       }));
 
-  return {
-    messages: [...state.messages, { role: "user", content: results }],
-    status: "thinking",
-  };
+    return {
+      messages: [...state.messages, { role: "user", content: results }],
+      status: "thinking",
+    };
+  }
+
+  async function runToCheckpoint(initial: AgentState): Promise<AgentState> {
+    let state = initial
+    while (state.status === "thinking") {
+      state = await runStep(state)
+    }
+    return state
+  }
+
+  return { runStep, resumeAfterApproval, runToCheckpoint }
 }
 
 // ============================================================================
@@ -620,21 +546,15 @@ function render(messages: Message[], from: number) {
   }
 }
 
-export async function runToCheckpoint(initial: AgentState): Promise<AgentState> {
-  let state = initial
-  while (state.status === "thinking") {
-    state = await runStep(state)
-  }
-  return state
-}
 
 async function drive(
+  agent: Agent,
   state: AgentState,
   shownFrom: number,
 ): Promise<AgentState> {
   let shown = shownFrom;
   while (state.status === "thinking") {
-    state = await runStep(state);
+    state = await agent.runStep(state);
     render(state.messages, shown);
     shown = state.messages.length;
   }
@@ -656,6 +576,7 @@ async function main() {
   console.log(`${ICON}session ${sessionId}`);
 
   const sink = jsonlSink(sessionId);
+  const agent = createAgent()
 
   let state: AgentState = resumeId
     ? {
@@ -682,7 +603,7 @@ async function main() {
 
     if (state.status === "awaiting_approval") {
       from = state.messages.length; // tool_use is already persisted
-      state = await resumeAfterApproval(state, input.toLowerCase() === "y");
+      state = await agent.resumeAfterApproval(state, input.toLowerCase() === "y");
     } else {
       if (input === "/quit") {
         break;
@@ -702,7 +623,7 @@ async function main() {
     }
 
     try {
-      state = await drive(state, from);
+      state = await drive(agent, state, from);
     } catch (err) {
       // drop failed turn;
       state = { messages: state.messages.slice(0, from), status: "idle" };

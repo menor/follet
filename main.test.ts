@@ -3,11 +3,6 @@ import {
   grep,
   listDir,
   resolveInSandbox,
-  runSol,
-  solArgv,
-  solEnv,
-  solError,
-  solNeedsApproval,
 } from "./main";
 import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -120,61 +115,4 @@ test("write path still rejects an existing symlinked leaf that escapes", async (
 test("read path (default mustExist) rejects a missing file", async () => {
   const missing = path.join(SANDBOX, "nope.txt");
   expect(resolveInSandbox(missing)).rejects.toThrow();
-});
-
-test("solEnv does not leak follet's own secrets into the child", () => {
-  process.env.ANTHROPIC_API_KEY_FOR_FOLLET = "decoy-model-key";
-  const env = solEnv("some-upsun-token");
-  expect(env.ANTHROPIC_API_KEY_FOR_FOLLET).toBeUndefined();
-  expect(Object.keys(env).sort()).toEqual(["HOME", "PATH", "UPSUN_TOKEN"]);
-});
-
-test("solEnv injects the token when set, omits the key when not", () => {
-  expect(solEnv("t").UPSUN_TOKEN).toBe("t");
-  expect("UPSUN_TOKEN" in solEnv("")).toBe(false); // "" is falsy → omitted; undefined would trigger the default
-});
-
-test("solArgv keeps the token out of the process arguments", () => {
-  const argv = solArgv(["project:list"]);
-  expect(argv).toEqual(["sol", "project:list", "-o", "json"]);
-  expect(argv.join(" ")).not.toContain("token"); // the model's args are the ONLY variable part
-});
-
-test("solError forwards Sol's structured message and hint", () => {
-  const body = JSON.stringify({
-    error: {
-      code: "unauthenticated",
-      message: "not logged in",
-      hint: "run auth:login",
-    },
-  });
-  const e = solError(body, "", 1) as Error & { code: string; hint: string };
-  expect(e.code).toBe("command_failed"); // follet owns its code
-  expect(e.message).toBe("not logged in"); // Sol's words, verbatim
-  expect(e.hint).toBe("run auth:login"); // Sol's hint, not a guess
-});
-
-test("solError falls back when Sol emits no JSON", () => {
-  const e = solError("", "boom", 1) as Error;
-  expect(e.message).toBe("boom");
-});
-
-test("runSol rejects non-array args with bad_input", async () => {
-  expect(runSol({ args: "project:list" as any })).rejects.toThrow();
-});
-
-test("read-only Sol verbs run without a human", () => {
-  expect(solNeedsApproval({ args: ["project:list"] })).toBe(false);
-  expect(solNeedsApproval({ args: ["environment:info", "main"] })).toBe(false);
-  expect(solNeedsApproval({ args: ["version"] })).toBe(false);
-});
-
-test("mutating Sol verbs gate", () => {
-  expect(solNeedsApproval({ args: ["environment:delete", "main"] })).toBe(true);
-  expect(solNeedsApproval({ args: ["environment:redeploy"] })).toBe(true);
-});
-
-test("an unknown verb gates — deny by default", () => {
-  expect(solNeedsApproval({ args: ["totally:new-verb"] })).toBe(true);
-  expect(solNeedsApproval({ args: [] })).toBe(true); // no verb at all → gate
 });
