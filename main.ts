@@ -9,7 +9,7 @@ import path from "node:path";
 const ICON = "🧚 ";
 const ICON_ERROR = "🔥 ";
 const API_KEY = process.env.ANTHROPIC_API_KEY_FOR_FOLLET;
-const MODEL = "claude-opus-4-6";
+const MODEL = "claude-opus-4-6"; // default; override per agent via createAgent({ model })
 const MAX_TOKENS = 4096; // default; override per agent via createAgent({ maxTokens })
 
 // Hardcoded to the testing dir, so we don't mess outside of it for now.
@@ -363,7 +363,7 @@ export const builtInToolRegistry: ToolRegistry = {
 // CORE — model transport + state-in/state-out engine, transport-agnostic
 // ============================================================================
 
-export function createAgent({ tools = builtInToolRegistry, maxTokens = MAX_TOKENS } = {}) {
+export function createAgent({ tools = builtInToolRegistry, maxTokens = MAX_TOKENS, model = MODEL } = {}) {
   // we don't want to send the functions in handlers in our response
   const toolSchemas = Object.values(tools).map((t) => t.schema);
 
@@ -380,7 +380,7 @@ export function createAgent({ tools = builtInToolRegistry, maxTokens = MAX_TOKEN
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: MODEL,
+        model,
         max_tokens: maxTokens,
         messages,
         tools: toolSchemas,

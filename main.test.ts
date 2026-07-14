@@ -119,6 +119,37 @@ test("read path (default mustExist) rejects a missing file", async () => {
   expect(resolveInSandbox(missing)).rejects.toThrow();
 });
 
+// model override — createAgent({ model }) must reach the request body.
+test("runStep sends the configured model", async () => {
+  const realFetch = globalThis.fetch;
+  let sentModel: unknown;
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    sentModel = JSON.parse(init.body as string).model;
+    return new Response(
+      JSON.stringify({
+        id: "msg_1",
+        role: "assistant",
+        content: [{ type: "text", text: "hi back" }],
+        stop_reason: "end_turn",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as unknown as typeof fetch;
+
+  const { runStep } = createAgent({ model: "claude-sonnet-5" });
+  const state: AgentState = {
+    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    status: "thinking",
+  };
+
+  try {
+    await runStep(state);
+    expect(sentModel).toBe("claude-sonnet-5");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // max_tokens guard — a truncated turn must throw, not flow through as content.
 test("runStep throws when the model's turn is cut off at max_tokens", async () => {
   const realFetch = globalThis.fetch;
