@@ -383,7 +383,7 @@ export function createAgent({ tools = builtInToolRegistry } = {}) {
         model: MODEL,
         max_tokens: MAX_TOKENS,
         messages,
-        toolSchemas,
+        tools: toolSchemas,
       }),
     });
 
