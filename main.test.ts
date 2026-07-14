@@ -1,8 +1,10 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import {
+  createAgent,
   grep,
   listDir,
   resolveInSandbox,
+  type AgentState,
 } from "./main";
 import { mkdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -115,4 +117,31 @@ test("write path still rejects an existing symlinked leaf that escapes", async (
 test("read path (default mustExist) rejects a missing file", async () => {
   const missing = path.join(SANDBOX, "nope.txt");
   expect(resolveInSandbox(missing)).rejects.toThrow();
+});
+
+// max_tokens guard — a truncated turn must throw, not flow through as content.
+test("runStep throws when the model's turn is cut off at max_tokens", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        id: "msg_1",
+        role: "assistant",
+        content: [{ type: "text", text: "let me batch these" }],
+        stop_reason: "max_tokens",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as unknown as typeof fetch;
+
+  const { runStep } = createAgent();
+  const state: AgentState = {
+    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    status: "thinking",
+  };
+
+  try {
+    await expect(runStep(state)).rejects.toThrow("Response cut off at max_tokens.");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

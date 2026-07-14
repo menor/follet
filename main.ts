@@ -10,7 +10,7 @@ const ICON = "🧚 ";
 const ICON_ERROR = "🔥 ";
 const API_KEY = process.env.ANTHROPIC_API_KEY_FOR_FOLLET;
 const MODEL = "claude-opus-4-6";
-const MAX_TOKENS = 1024;
+const MAX_TOKENS = 4096; // default; override per agent via createAgent({ maxTokens })
 
 // Hardcoded to the testing dir, so we don't mess outside of it for now.
 const SANDBOX_DIR = "./sandbox/run";
@@ -363,7 +363,7 @@ export const builtInToolRegistry: ToolRegistry = {
 // CORE — model transport + state-in/state-out engine, transport-agnostic
 // ============================================================================
 
-export function createAgent({ tools = builtInToolRegistry } = {}) {
+export function createAgent({ tools = builtInToolRegistry, maxTokens = MAX_TOKENS } = {}) {
   // we don't want to send the functions in handlers in our response
   const toolSchemas = Object.values(tools).map((t) => t.schema);
 
@@ -381,7 +381,7 @@ export function createAgent({ tools = builtInToolRegistry } = {}) {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: MAX_TOKENS,
+        max_tokens: maxTokens,
         messages,
         tools: toolSchemas,
       }),
@@ -392,6 +392,16 @@ export function createAgent({ tools = builtInToolRegistry } = {}) {
     }
 
     const data = (await response.json()) as AssistantResponse;
+
+    // A truncated turn is an incomplete instruction — the last tool_use may be
+    // half-formed. Refuse to act on it instead of guessing.
+    if (data.stop_reason === "max_tokens") {
+      throw toolError(
+        "truncated",
+        "Response cut off at max_tokens.",
+        "Raise maxTokens or ask for less in one turn.",
+      );
+    }
 
     return {
       role: "assistant",
